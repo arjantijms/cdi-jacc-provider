@@ -37,16 +37,18 @@ public class DefaultPolicy extends Policy {
         SecurityConstraints securityConstraints = policyConfiguration.getSecurityConstraints();
         
         List<Principal> currentUserPrincipals = asList(domain.getPrincipals());
+        
+        Principal callerPrincipal = roleMapper.getCallerPrincipalFromPrincipals(currentUserPrincipals);
 
-        // Or check roleMapper.getCallerPrincipalFromPrincipals?
-        boolean postAuthenticate = domain.getPrincipals().length > 0;
+        // Note: if caller principal
+        boolean postAuthenticate = callerPrincipal != null && callerPrincipal.getName() != null;
         
         AuthorizationMechanism mechanism = getBeanReferenceExtra(AuthorizationMechanism.class);
         Caller caller = null;
         
         if (postAuthenticate) {
             caller = new Caller(
-                roleMapper.getCallerPrincipalFromPrincipals(currentUserPrincipals),
+                callerPrincipal,
                 roleMapper.getMappedRolesFromPrincipals(currentUserPrincipals),
                 currentUserPrincipals);
         }
