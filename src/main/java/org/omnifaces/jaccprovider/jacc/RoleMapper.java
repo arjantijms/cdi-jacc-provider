@@ -116,6 +116,21 @@ public class RoleMapper {
             switch (principal.getClass().getName()) {
                 case "org.glassfish.security.common.PrincipalImpl":
                     return principal;
+            case "org.apache.tomee.catalina.TomcatSecurityService$TomcatUser":
+                try {
+                    return 
+                        (Principal) Class.forName("org.apache.catalina.realm.GenericPrincipal")
+                                         .getMethod("getUserPrincipal")
+                                         .invoke(
+                                             Class.forName("org.apache.tomee.catalina.TomcatSecurityService$TomcatUser")
+                                                  .getMethod("getTomcatPrincipal")
+                                                  .invoke(principal))
+                		
+                		;
+                	} catch (Exception e) {
+                		
+                	}
+                    break;
                 // TODO: depend on this directly later 
                 case "javax.security.CallerPrincipal":
                     return principal;
@@ -321,14 +336,14 @@ public class RoleMapper {
     public boolean principalToGroups(Principal principal, List<String> groups) {
         switch (principal.getClass().getName()) {
  
-            case "org.glassfish.security.common.Group": // GlassFish
+            case "org.glassfish.security.common.Group": // GlassFish / Payara
             case "org.apache.geronimo.security.realm.providers.GeronimoGroupPrincipal": // Geronimo
             case "weblogic.security.principal.WLSGroupImpl": // WebLogic
             case "jeus.security.resource.GroupPrincipalImpl": // JEUS
                 groups.add(principal.getName());
                 break;
      
-            case "org.jboss.security.SimpleGroup": // JBoss
+            case "org.jboss.security.SimpleGroup": // JBoss EAP/WildFly
                 if (principal.getName().equals("Roles") && principal instanceof Group) {
                     Group rolesGroup = (Group) principal;
                     for (Principal groupPrincipal : list(rolesGroup.members())) {
@@ -339,7 +354,24 @@ public class RoleMapper {
                     // early
                     return true;
                 }
+            case "org.apache.tomee.catalina.TomcatSecurityService$TomcatUser": // TomEE
+                try {
+                    groups.addAll(
+                        asList((String[])
+                            Class.forName("org.apache.catalina.realm.GenericPrincipal")
+                                 .getMethod("getRoles")
+                                 .invoke(
+                                     Class.forName("org.apache.tomee.catalina.TomcatSecurityService$TomcatUser")
+                                          .getMethod("getTomcatPrincipal")
+                                          .invoke(principal))));
+                        
+                        ;
+                    } catch (Exception e) {
+                        
+                    }
+                    break;
             }
+            
         return false;
     }
  
