@@ -10,6 +10,7 @@ import java.security.Principal;
 import java.security.acl.Group;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import javax.security.auth.Subject;
+import javax.security.jacc.PolicyContext;
+import javax.security.jacc.PolicyContextException;
  
 public class RoleMapper {
      
@@ -26,6 +29,7 @@ public class RoleMapper {
      
     private Map<String, List<String>> groupToRoles = new HashMap<>();
  
+    private boolean isJboss;
     private boolean oneToOneMapping;
     private boolean anyAuthenticatedUserRoleMapped = false;
      
@@ -94,6 +98,8 @@ public class RoleMapper {
         // AS. Sad that this is needed :(
         if (tryGlassFish(contextID, allDeclaredRoles)) {
             return;
+        } else if (tryJBoss()) {
+            return;
         } else if (tryWebLogic(contextID, allDeclaredRoles)) {
             return;
         } else if (tryGeronimo(contextID, allDeclaredRoles)) {
@@ -112,32 +118,32 @@ public class RoleMapper {
     }
     
     public Principal getCallerPrincipalFromPrincipals(Iterable<Principal> principals) {
-        for (Principal principal : principals) {
-            switch (principal.getClass().getName()) {
-                case "org.glassfish.security.common.PrincipalImpl":
-                    return principal;
-            case "org.apache.tomee.catalina.TomcatSecurityService$TomcatUser":
-                try {
-                    return 
-                        (Principal) Class.forName("org.apache.catalina.realm.GenericPrincipal")
-                                         .getMethod("getUserPrincipal")
-                                         .invoke(
-                                             Class.forName("org.apache.tomee.catalina.TomcatSecurityService$TomcatUser")
-                                                  .getMethod("getTomcatPrincipal")
-                                                  .invoke(principal))
-                		
-                		;
-                	} catch (Exception e) {
-                		
-                	}
-                    break;
-                // TODO: depend on this directly later 
-                case "javax.security.CallerPrincipal":
-                    return principal;
-            }
-        }
         
-        return null;
+        if (isJboss) {
+            try {
+                
+                // The JACCAuthorizationManager that normally would call us in JBoss only passes
+                // either the role principals or the caller principal in, never both, and without any
+                // easy way to distinguish between them.
+                
+                // So we're getting the principals from the Subject here. Do note that we miss the
+                // potential extra deployment roles here which may be in the principals collection we get
+                // passed in.
+                Subject subject = (Subject) PolicyContext.getContext("javax.security.auth.Subject.container");
+                
+                if (subject == null) {
+                    return null;
+                }
+                
+                return doGetCallerPrincipalFromPrincipals(subject.getPrincipals());
+            } catch (PolicyContextException e1) {
+                // Ignore
+            }
+            
+            return null;
+        }
+       
+        return doGetCallerPrincipalFromPrincipals(principals);
     }
  
     public List<String> getMappedRolesFromPrincipals(Iterable<Principal> principals) {
@@ -167,6 +173,23 @@ public class RoleMapper {
         }
  
         return roles;
+    }
+    
+    private boolean tryJBoss() {
+        try {
+            Class.forName("org.jboss.as.security.service.JaccService", false, Thread.currentThread().getContextClassLoader());
+            
+            // For not only establish that we're running on JBoss, ignore the
+            // role mapper for now
+            isJboss = true;
+            oneToOneMapping = true;
+            
+            return true;
+        } catch (Exception e) {
+            // ignore
+        }
+        
+        return false;
     }
  
     private boolean tryGlassFish(String contextID, Collection<String> allDeclaredRoles) {
@@ -332,6 +355,49 @@ public class RoleMapper {
         principalToGroups(principal, groups);
         return groups;
     }
+    
+    private Principal doGetCallerPrincipalFromPrincipals(Iterable<Principal> principals) {
+        
+        for (Principal principal : principals) {
+            switch (principal.getClass().getName()) {
+                case "org.glassfish.security.common.PrincipalImpl": // GlassFish/Payara
+                // JBoss EAP/WildFly convention 1 - single top level principal of the below type
+                case "org.jboss.security.SimplePrincipal":
+                    return principal;
+                // JBoss EAP/WildFly convention 2 - the one and only principal in group called CallerPrincipal
+                case "org.jboss.security.SimpleGroup": 
+                    if (principal.getName().equals("CallerPrincipal") && principal instanceof Group) {
+                        
+                        Enumeration<? extends Principal> groupMembers = ((Group) principal).members();
+                        
+                        if (groupMembers.hasMoreElements()) {
+                            return groupMembers.nextElement();
+                        }
+                    }
+                    break;
+                case "org.apache.tomee.catalina.TomcatSecurityService$TomcatUser": // TomEE
+                    try {
+                        return 
+                            (Principal) Class.forName("org.apache.catalina.realm.GenericPrincipal")
+                                             .getMethod("getUserPrincipal")
+                                             .invoke(
+                                                 Class.forName("org.apache.tomee.catalina.TomcatSecurityService$TomcatUser")
+                                                      .getMethod("getTomcatPrincipal")
+                                                      .invoke(principal))
+                            
+                            ;
+                        } catch (Exception e) {
+                            
+                        }
+                        break;
+                // TODO: depend on this directly later 
+                case "javax.security.CallerPrincipal":
+                    return principal;
+            }
+        }
+        
+        return null;
+    }
      
     public boolean principalToGroups(Principal principal, List<String> groups) {
         switch (principal.getClass().getName()) {
@@ -374,5 +440,7 @@ public class RoleMapper {
             
         return false;
     }
+    
+    
  
 }
