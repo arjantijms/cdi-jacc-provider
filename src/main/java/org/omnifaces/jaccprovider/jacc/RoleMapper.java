@@ -1,5 +1,7 @@
 package org.omnifaces.jaccprovider.jacc;
+import static java.lang.System.getProperty;
 import static java.util.Arrays.asList;
+import static java.util.Collections.emptyList;
 import static java.util.Collections.list;
 
 import java.lang.reflect.InvocationHandler;
@@ -12,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.Hashtable;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -30,6 +33,7 @@ public class RoleMapper {
     private Map<String, List<String>> groupToRoles = new HashMap<>();
  
     private boolean isJboss;
+    private boolean isLiberty;
     private boolean oneToOneMapping;
     private boolean anyAuthenticatedUserRoleMapped = false;
      
@@ -100,6 +104,8 @@ public class RoleMapper {
             return;
         } else if (tryJBoss()) {
             return;
+        } else if (tryLiberty()) {
+            return;
         } else if (tryWebLogic(contextID, allDeclaredRoles)) {
             return;
         } else if (tryGeronimo(contextID, allDeclaredRoles)) {
@@ -146,12 +152,54 @@ public class RoleMapper {
         return doGetCallerPrincipalFromPrincipals(principals);
     }
  
+    @SuppressWarnings("unchecked")
     public List<String> getMappedRolesFromPrincipals(Iterable<Principal> principals) {
+        
+        List<String> groups = null;
+        
+        if (isLiberty || isJboss) { 
+           
+            try {
+                Subject subject = (Subject) PolicyContext.getContext("javax.security.auth.Subject.container");
+                if (subject == null) {
+                    return emptyList();
+                }
+                
+                if (isLiberty) {
+                    // Liberty is the only known Java EE server that doesn't put the groups in
+                    // the principals collection, but puts them in the credentials of a Subject.
+                    // This somewhat peculiar decision means a JACC provider never gets to see
+                    // groups via the principals that are passed in and must get them from
+                    // the current Subject.
+                    
+                    @SuppressWarnings("rawtypes")
+                    Set<Hashtable> tables = subject.getPrivateCredentials(Hashtable.class);
+                    if (tables != null && !tables.isEmpty()) {
+                        @SuppressWarnings("rawtypes")
+                        Hashtable table = tables.iterator().next();
+                        groups = (List<String>) table.get("com.ibm.wsspi.security.cred.groups");
+                    }
+                } else {
+                    // The JACCAuthorizationManager that normally would call us in JBoss only passes
+                    // either the role principals or the caller principal in, never both, and without any
+                    // easy way to distinguish between them.
+                    
+                    // So we're getting the principals from the Subject here. Do note that we miss the
+                    // potential extra deployment roles here which may be in the principals collection we get
+                    // passed in.
+                    groups = getGroupsFromPrincipals(subject.getPrincipals());
+                }
+            }
+            catch (Exception e) {
+                e.printStackTrace();
+            }
+        } else {
  
-        // Extract the list of groups from the principals. These principals typically contain
-        // different kind of principals, some groups, some others. The groups are unfortunately vendor
-        // specific.
-        List<String> groups = getGroupsFromPrincipals(principals);
+            // Extract the list of groups from the principals. These principals typically contain
+            // different kind of principals, some groups, some others. The groups are unfortunately vendor
+            // specific.
+            groups = getGroupsFromPrincipals(principals);
+        }
  
         // Map the groups to roles. E.g. map "admin" to "administrator". Some servers require this.
         return mapGroupsToRoles(groups);
@@ -190,6 +238,18 @@ public class RoleMapper {
         }
         
         return false;
+    }
+    
+    private boolean tryLiberty() {
+        isLiberty = (getProperty("wlp.server.name") != null);
+     
+        // Liberty as only server disables its otherwise mandatory role mapping
+        // when portable authentication is used. All other servers have this
+        // decoupled - groups from portable authentication modules can be role
+        // mapped by the proprietary role mapper. For now we thus assume 1:1 
+        // role mapping for Liberty.
+        oneToOneMapping = true; 
+        return isLiberty;
     }
  
     private boolean tryGlassFish(String contextID, Collection<String> allDeclaredRoles) {
@@ -363,6 +423,7 @@ public class RoleMapper {
                 case "org.glassfish.security.common.PrincipalImpl": // GlassFish/Payara
                 // JBoss EAP/WildFly convention 1 - single top level principal of the below type
                 case "org.jboss.security.SimplePrincipal":
+                case "com.ibm.ws.security.authentication.principals.WSPrincipal": // Liberty
                     return principal;
                 // JBoss EAP/WildFly convention 2 - the one and only principal in group called CallerPrincipal
                 case "org.jboss.security.SimpleGroup": 

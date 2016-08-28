@@ -57,14 +57,14 @@ public class CdiUtils {
         Object beanReference = null;
         
         try {
-            beanReference = CdiUtils.getBeanReference(AuthorizationMechanism.class);
+            beanReference = CdiUtils.getBeanReference(type);
         } catch (Exception e) {
             // ignore for now
         }
         
         if (beanReference == null) {
             try {
-                beanReference = CDI.current().select(AuthorizationMechanism.class).get();
+                beanReference = CDI.current().select(type).get();
             } catch (Exception e) {
                 // ignore for now
             }
